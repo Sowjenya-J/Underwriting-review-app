@@ -14,9 +14,7 @@ AMOUNT_COLS = [
 ]
 
 def clean_amount_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Remove commas and convert rupee-style strings to float.
-    """
+    """Remove commas and convert rupee-style strings to float."""
     for col in AMOUNT_COLS:
         if col in df.columns:
             df[col] = (
@@ -29,10 +27,7 @@ def clean_amount_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def add_financial_ratios(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Adds DSCR, Current_Ratio, Debt_to_Equity, ICR to df.
-    Expects amount columns to exist (see AMOUNT_COLS).
-    """
+    """Adds DSCR, Current_Ratio, Debt_to_Equity, ICR."""
     df = clean_amount_columns(df)
 
     # Avoid division by zero

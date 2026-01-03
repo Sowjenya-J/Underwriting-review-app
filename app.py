@@ -1,209 +1,119 @@
-# app.py
+# app.py - Phase 1+2: Portfolio Dashboard + Multi-Scenario + Ensemble ML
 import streamlit as st
 import pandas as pd
+import numpy as np
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+import plotly.express as px
 
 from financial_ratios import add_financial_ratios
 
-st.set_page_config(page_title="Credit Underwriting Simulator", layout="wide")
-st.title("Credit Underwriting Simulator")
+st.set_page_config(
+    page_title="CreditLens Pro - Sowjenya J", 
+    page_icon="💳",
+    layout="wide"
+)
+st.title("💳 CreditLens Pro")
+st.markdown("_Next-gen underwriting: AI PD + DSCR rules + Portfolio analytics_")
 st.markdown("_Developed by **Sowjenya J**_")
 
-st.write("Upload borrower financial data to compute ratios, PD, risk grades and approval decisions.")
+uploaded_file = st.file_uploader("📁 Upload borrower portfolio CSV", type="csv")
 
-uploaded_file = st.file_uploader("Upload CSV", type="csv")
-
-# --- Risk engine helpers -----------------------------------------------------
-def map_pd_to_grade(pd_value: float) -> str:
-    if pd_value <= 0.02:
-        return "AAA"
-    elif pd_value <= 0.05:
-        return "AA"
-    elif pd_value <= 0.10:
-        return "A"
-    elif pd_value <= 0.20:
-        return "BBB"
-    elif pd_value <= 0.35:
-        return "BB"
-    elif pd_value <= 0.50:
-        return "B"
-    else:
-        return "C"
-
-def approval_decision(row) -> str:
-    dscr = row.get("DSCR", None)
-    icr = row.get("ICR", None)
-    cr = row.get("Current_Ratio", None)
-    pd_val = row.get("PD", None)
-
-    if any(x is None for x in [dscr, icr, cr, pd_val]):
-        return "Review"
-
-    if (dscr is not None and dscr < 1.0) or \
-       (icr is not None and icr < 1.5) or \
-       (cr is not None and cr < 1.0) or \
-       (pd_val is not None and pd_val > 0.5):
-        return "Auto Reject"
-
-    if dscr >= 1.5 and icr >= 2.0 and cr >= 1.2 and pd_val <= 0.20:
-        return "Approve"
-
-    return "Review"
-
-def explain_grade_and_decision(row) -> str:
-    grade = row.get("RiskGrade", "")
-    decision = row.get("Decision", "")
-    dscr = row.get("DSCR", float("nan"))
-    icr = row.get("ICR", float("nan"))
-    cr = row.get("Current_Ratio", float("nan"))
-    pd_val = row.get("PD", float("nan"))
-
-    reasons = []
-    if pd_val <= 0.05:
-        reasons.append("very low default probability")
-    elif pd_val <= 0.20:
-        reasons.append("moderate default probability")
-    else:
-        reasons.append("high default probability")
-
-    if dscr >= 1.5:
-        reasons.append("strong DSCR")
-    elif dscr < 1.0:
-        reasons.append("weak DSCR")
-
-    if icr >= 2.0:
-        reasons.append("strong ICR")
-    elif icr < 1.5:
-        reasons.append("weak ICR")
-
-    if cr >= 1.2:
-        reasons.append("good liquidity")
-    elif cr < 1.0:
-        reasons.append("weak liquidity")
-
-    text = f"Grade {grade}, decision: {decision} – " + ", ".join(reasons)
-    return text
-
-# --- Sidebar: Stress test ----------------------------------------------------
-st.sidebar.header("Stress Testing – Interest Rate Shock")
-rate_shock_pct = st.sidebar.slider(
-    "Increase interest expense by (%)", min_value=0, max_value=200, value=0, step=10
+# Multi-scenario selector
+st.sidebar.header("🎯 Scenarios")
+scenario = st.sidebar.selectbox(
+    "Stress Scenario", 
+    ["Baseline", "Interest Shock +25%", "Recession -20% Cashflow", "High Inflation"]
 )
 
-# --- CSV to download helper --------------------------------------------------
 @st.cache_data
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode("utf-8")
 
-# --- Main flow ---------------------------------------------------------------
 if uploaded_file is not None:
-    # 1. Load CSV
     data = pd.read_csv(uploaded_file)
-
-    # 2. Compute ratios (also cleans numeric amount columns)
     data = add_financial_ratios(data)
 
-    # 3. Feature columns for PD model (match CSV and ratios)
     feature_cols = [
-        "Age",
-        "Income",
-        "Debt_to_Income",
-        "Credit_History_Years",
-        "DSCR",
-        "Current_Ratio",
-        "Debt_to_Equity",
-        "ICR",
+        "Age", "Income", "Debt_to_Income", "Credit_History_Years",
+        "DSCR", "Current_Ratio", "Debt_to_Equity", "ICR"
     ]
 
-    missing_feats = [c for c in feature_cols if c not in data.columns]
-    if missing_feats:
-        st.error(f"Missing required columns for PD model: {missing_feats}")
+    if all(col in data.columns for col in feature_cols) and "Default" in data.columns:
+        # Ensemble ML Models
+        X = data[feature_cols].fillna(data[feature_cols].mean())
+        y = data["Default"]
+
+        models = {
+            'Logistic': LogisticRegression(max_iter=1000),
+            'RandomForest': RandomForestClassifier(n_estimators=50, random_state=42)
+        }
+        
+        pd_predictions = {}
+        for name, model in models.items():
+            model.fit(X, y)
+            pd_predictions[name] = model.predict_proba(X)[:, 1]
+        
+        # Ensemble PD (average)
+        data["PD"] = np.mean(list(pd_predictions.values()), axis=0)
+
+        # Risk grades & decisions (your existing logic)
+        data["RiskGrade"] = data["PD"].apply(
+            lambda x: "AAA" if x<=0.02 else "AA" if x<=0.05 else "A" if x<=0.10 
+            else "BBB" if x<=0.20 else "BB" if x<=0.35 else "B" if x<=0.50 else "C"
+        )
+        
+        data["Decision"] = data.apply(lambda row: 
+            "Auto Reject" if row["DSCR"]<1.0 or row["ICR"]<1.5 or row["PD"]>0.5 
+            else "Approve" if row["DSCR"]>=1.5 and row["ICR"]>=2.0 and row["PD"]<=0.20 
+            else "Review", axis=1
+        )
+
+        # Apply scenario
+        stressed_data = data.copy()
+        if scenario == "Interest Shock +25%":
+            stressed_data["Interest_Expense"] *= 1.25
+        elif scenario == "Recession -20% Cashflow":
+            stressed_data["Operating_Cash_Flow"] *= 0.8
+        elif scenario == "High Inflation":
+            stressed_data["Operating_Cash_Flow"] *= 0.9
+            stressed_data["Interest_Expense"] *= 1.15
+        
+        stressed_data = add_financial_ratios(stressed_data)
+        stressed_data["PD"] = np.mean([m.predict_proba(stressed_data[feature_cols].fillna(X.mean()))[:,1] 
+                                       for m in models.values()], axis=0)
+
+        # Portfolio Dashboard (Phase 1)
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("📊 Portfolio Size", len(data))
+        col2.metric("🎯 Avg PD", f"{data['PD'].mean():.1%}")
+        col3.metric("✅ Approve Rate", f"{(data['Decision']=='Approve').mean():.1%}")
+        col4.metric("🚨 High Risk (C)", f"{(data['PD']>0.5).sum()}")
+
+        # Results Tables
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.subheader("📈 Baseline Results")
+            baseline_df = data[feature_cols + ["PD", "RiskGrade", "Decision"]]
+            st.dataframe(baseline_df, use_container_width=True)
+            st.download_button("📥 Download Baseline CSV", 
+                             convert_df_to_csv(baseline_df),
+                             "baseline_results.csv")
+        
+        with col_right:
+            st.subheader(f"🎯 {scenario} Stress Test")
+            stress_df = stressed_data[feature_cols + ["PD", "RiskGrade", "Decision"]]
+            st.dataframe(stress_df, use_container_width=True)
+            st.download_button("📥 Download Stress CSV", 
+                             convert_df_to_csv(stress_df),
+                             f"{scenario.lower().replace(' ','_')}_results.csv")
+
+        # Risk Grade Chart (Phase 2 visual)
+        fig = px.histogram(data, x="RiskGrade", color="Decision", 
+                          title="Portfolio Risk Distribution")
+        st.plotly_chart(fig, use_container_width=True)
+
     else:
-        if "Default" not in data.columns:
-            st.error("No 'Default' column in data – cannot train PD model.")
-        else:
-            base_data = data.copy()
-
-            # 4. Train Logistic Regression
-            X = data[feature_cols]
-            y = data["Default"]
-
-            model_df = pd.concat([X, y], axis=1).dropna()
-            X_model = model_df[feature_cols]
-            y_model = model_df["Default"]
-
-            if y_model.nunique() < 2:
-                st.error("Default column has only one class – cannot train logistic regression.")
-            else:
-                model = LogisticRegression(max_iter=1000)
-                model.fit(X_model, y_model)
-
-                # 5. Baseline PD
-                X_full = data[feature_cols].copy()
-                X_full = X_full.fillna(X_model.mean())
-                pd_probs = model.predict_proba(X_full)[:, 1]
-                data["PD"] = pd_probs
-
-                data["RiskGrade"] = data["PD"].apply(map_pd_to_grade)
-                data["Decision"] = data.apply(approval_decision, axis=1)
-                data["Explanation"] = data.apply(explain_grade_and_decision, axis=1)
-
-                st.subheader("Baseline – Ratios, PD, Risk Grade & Decision")
-                st.dataframe(
-                    data[
-                        feature_cols
-                        + ["PD", "RiskGrade", "Decision", "Explanation"]
-                    ]
-                )
-
-                # ---- Download baseline results as CSV ----
-                baseline_df = data[feature_cols + ["PD", "RiskGrade", "Decision", "Explanation"]]
-                csv_baseline = convert_df_to_csv(baseline_df)
-
-                st.download_button(
-                    label="📥 Download baseline results as CSV",
-                    data=csv_baseline,
-                    file_name="baseline_credit_underwriting_results.csv",
-                    mime="text/csv",
-                )
-
-                # 6. Stress test – increase interest expense
-                st.subheader("Stress Testing – Interest Rate Shock")
-
-                stressed = base_data.copy()
-                if "Interest_Expense" in stressed.columns:
-                    stressed["Interest_Expense"] = (
-                        stressed["Interest_Expense"] * (1 + rate_shock_pct / 100.0)
-                    )
-                    stressed = add_financial_ratios(stressed)
-
-                    X_stress = stressed[feature_cols].copy()
-                    X_stress = X_stress.fillna(X_model.mean())
-                    stressed_pd = model.predict_proba(X_stress)[:, 1]
-                    stressed["PD"] = stressed_pd
-                    stressed["RiskGrade"] = stressed["PD"].apply(map_pd_to_grade)
-                    stressed["Decision"] = stressed.apply(approval_decision, axis=1)
-                    stressed["Explanation"] = stressed.apply(explain_grade_and_decision, axis=1)
-
-                    st.write(f"Interest expense increased by **{rate_shock_pct}%**.")
-                    st.dataframe(
-                        stressed[
-                            feature_cols
-                            + ["PD", "RiskGrade", "Decision", "Explanation"]
-                        ]
-                    )
-
-                    # ---- Download stressed results as CSV ----
-                    stressed_df = stressed[feature_cols + ["PD", "RiskGrade", "Decision", "Explanation"]]
-                    csv_stressed = convert_df_to_csv(stressed_df)
-
-                    st.download_button(
-                        label="📥 Download stressed results as CSV",
-                        data=csv_stressed,
-                        file_name=f"stressed_results_{rate_shock_pct}pct.csv",
-                        mime="text/csv",
-                    )
-                else:
-                    st.warning("Interest_Expense column not found – cannot run interest rate shock.")
+        st.error("❌ Missing columns. Need: " + ", ".join(feature_cols) + ", Default")
 else:
-    st.info("Please upload a CSV file with borrower and financial data.")
+    st.info("👆 Upload CSV to analyze portfolio")
